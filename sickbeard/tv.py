@@ -24,7 +24,6 @@ import os.path
 import datetime
 import threading
 import re
-import glob
 import stat
 import traceback
 
@@ -51,6 +50,8 @@ from sickbeard.blackandwhitelist import BlackAndWhiteList
 from sickbeard import network_timezones
 from sickbeard.indexers.indexer_config import INDEXER_TVRAGE
 from sickbeard.name_parser.parser import NameParser, InvalidNameException, InvalidShowException
+
+from sickrage.helper import glob
 from sickrage.helper.common import dateTimeFormat, remove_extension, replace_extension, sanitize_filename, try_int, episode_num
 from sickrage.helper.encoding import ek
 from sickrage.helper.exceptions import EpisodeDeletedException, EpisodeNotFoundException, ex
@@ -99,6 +100,7 @@ class TVShow(object):  # pylint: disable=too-many-instance-attributes, too-many-
         self._paused = 0
         self._air_by_date = 0
         self._subtitles = int(sickbeard.SUBTITLES_DEFAULT)
+        self._subtitles_sr_metadata = 0
         self._dvdorder = 0
         self._lang = lang
         self._last_update_indexer = 1
@@ -149,6 +151,7 @@ class TVShow(object):  # pylint: disable=too-many-instance-attributes, too-many-
     rls_ignore_words = property(lambda self: self._rls_ignore_words, dirty_setter("_rls_ignore_words"))
     rls_require_words = property(lambda self: self._rls_require_words, dirty_setter("_rls_require_words"))
     default_ep_status = property(lambda self: self._default_ep_status, dirty_setter("_default_ep_status"))
+    subtitles_sr_metadata = property(lambda self: self._subtitles_sr_metadata, dirty_setter("_subtitles_sr_metadata"))
 
     @property
     def is_anime(self):
@@ -194,21 +197,22 @@ class TVShow(object):  # pylint: disable=too-many-instance-attributes, too-many-
 
     def getAllEpisodes(self, season=None, has_location=False):
 
-        sql_selection = "SELECT season, episode, "
+        sql_selection = 'SELECT season, episode, '
 
         # subselection to detect multi-episodes early, share_location > 0
-        sql_selection += " (SELECT COUNT (*) FROM tv_episodes WHERE showid = tve.showid AND season = tve.season AND location != '' AND location = tve.location AND episode != tve.episode) AS share_location "
-
-        sql_selection = sql_selection + " FROM tv_episodes tve WHERE showid = " + str(self.indexerid)
+        sql_selection += '(SELECT COUNT (*) FROM tv_episodes WHERE showid = tve.showid '
+        sql_selection += 'AND season = tve.season AND location != \'\' AND location = tve.location '
+        sql_selection += 'AND episode != tve.episode) AS share_location '
+        sql_selection += 'FROM tv_episodes tve WHERE showid = {0} '.format(self.indexerid)
 
         if season is not None:
-            sql_selection = sql_selection + " AND season = " + str(season)
+            sql_selection += 'AND season = {0} '.format(season)
 
         if has_location:
-            sql_selection += " AND location != '' "
+            sql_selection += 'AND location != \'\' '
 
         # need ORDER episode ASC to rename multi-episodes in order S01E01-02
-        sql_selection += " ORDER BY season ASC, episode ASC"
+        sql_selection += 'ORDER BY season ASC, episode ASC '
 
         main_db_con = db.DBConnection()
         results = main_db_con.select(sql_selection)
@@ -469,12 +473,11 @@ class TVShow(object):  # pylint: disable=too-many-instance-attributes, too-many-
 
         lINDEXER_API_PARMS = sickbeard.indexerApi(self.indexer).api_params.copy()
 
-        if self.lang:
-            lINDEXER_API_PARMS[b'language'] = self.lang
-            logger.log("Using language: " + str(self.lang), logger.DEBUG)
+        lINDEXER_API_PARMS['language'] = self.lang or sickbeard.INDEXER_DEFAULT_LANGUAGE
+        logger.log("Using language: " + str(self.lang), logger.DEBUG)
 
-        if self.dvdorder != 0:
-            lINDEXER_API_PARMS[b'dvdorder'] = True
+        if self.dvdorder:
+            lINDEXER_API_PARMS['dvdorder'] = True
 
         # logger.log("lINDEXER_API_PARMS: " + str(lINDEXER_API_PARMS), logger.DEBUG)
         # Spamming log
@@ -497,7 +500,8 @@ class TVShow(object):  # pylint: disable=too-many-instance-attributes, too-many-
                 try:
                     cachedSeasons[curSeason] = cachedShow[curSeason]
                 except sickbeard.indexer_seasonnotfound as error:
-                    logger.log("{0}: {1} (unaired/deleted) in the indexer {2} for {3}. Removing existing records from database".format(curShowid, error.message, sickbeard.indexerApi(self.indexer).name, curShowName), logger.DEBUG)
+                    logger.log("{0}: {1} (unaired/deleted) in the indexer {2} for {3}. Removing existing records from database".format
+                               (curShowid, error.message, sickbeard.indexerApi(self.indexer).name, curShowName), logger.DEBUG)
                     deleteEp = True
 
             if curSeason not in scannedEps:
@@ -536,13 +540,12 @@ class TVShow(object):  # pylint: disable=too-many-instance-attributes, too-many-
         lINDEXER_API_PARMS = sickbeard.indexerApi(self.indexer).api_params.copy()
 
         if not cache:
-            lINDEXER_API_PARMS[b'cache'] = False
+            lINDEXER_API_PARMS['cache'] = False
 
-        if self.lang:
-            lINDEXER_API_PARMS[b'language'] = self.lang
+        lINDEXER_API_PARMS['language'] = self.lang or sickbeard.INDEXER_DEFAULT_LANGUAGE
 
-        if self.dvdorder != 0:
-            lINDEXER_API_PARMS[b'dvdorder'] = True
+        if self.dvdorder:
+            lINDEXER_API_PARMS['dvdorder'] = True
 
         try:
             t = sickbeard.indexerApi(self.indexer).indexer(**lINDEXER_API_PARMS)
@@ -669,7 +672,7 @@ class TVShow(object):  # pylint: disable=too-many-instance-attributes, too-many-
 
             else:
                 # if there is a new file associated with this ep then re-check the quality
-                if not curEp.location or ek(os.path.normpath, curEp.location) != ek(os.path.normpath, filepath):
+                if curEp.location and ek(os.path.normpath, curEp.location) != ek(os.path.normpath, filepath):
                     logger.log(
                         "{0}: The old episode had a different file associated with it, re-checking the quality using the new filename {1}".format
                         (self.indexerid, filepath), logger.DEBUG)
@@ -699,16 +702,14 @@ class TVShow(object):  # pylint: disable=too-many-instance-attributes, too-many-
                 newQuality = Quality.nameQuality(filepath, self.is_anime)
                 logger.log("{0}: Since this file has been renamed, I checked {1} and found quality {2}".format
                            (self.indexerid, filepath, Quality.qualityStrings[newQuality]), logger.DEBUG)
-                if newQuality != Quality.UNKNOWN:
-                    with curEp.lock:
-                        curEp.status = Quality.compositeStatus(DOWNLOADED, newQuality)
+
+                with curEp.lock:
+                    curEp.status = Quality.compositeStatus(DOWNLOADED, newQuality)
 
             # check for status/quality changes as long as it's a new file
             elif not same_file and sickbeard.helpers.isMediaFile(filepath) and curEp.status not in Quality.DOWNLOADED + Quality.ARCHIVED + [IGNORED]:
                 oldStatus, oldQuality = Quality.splitCompositeStatus(curEp.status)
                 newQuality = Quality.nameQuality(filepath, self.is_anime)
-                if newQuality == Quality.UNKNOWN:
-                    newQuality = Quality.assumeQuality(filepath)
 
                 newStatus = None
 
@@ -813,6 +814,8 @@ class TVShow(object):  # pylint: disable=too-many-instance-attributes, too-many-
             if self.is_anime:
                 self.release_groups = BlackAndWhiteList(self.indexerid)
 
+            self.subtitles_sr_metadata = int(sql_results[0][b"sub_use_sr_metadata"] or 0)
+
         # Get IMDb_info from database
         main_db_con = db.DBConnection()
         sql_results = main_db_con.select("SELECT * FROM imdb_info WHERE indexer_id = ?", [self.indexerid])
@@ -841,13 +844,12 @@ class TVShow(object):  # pylint: disable=too-many-instance-attributes, too-many-
             lINDEXER_API_PARMS = sickbeard.indexerApi(self.indexer).api_params.copy()
 
             if not cache:
-                lINDEXER_API_PARMS[b'cache'] = False
+                lINDEXER_API_PARMS['cache'] = False
 
-            if self.lang:
-                lINDEXER_API_PARMS[b'language'] = self.lang
+            lINDEXER_API_PARMS['language'] = self.lang or sickbeard.INDEXER_DEFAULT_LANGUAGE
 
-            if self.dvdorder != 0:
-                lINDEXER_API_PARMS[b'dvdorder'] = True
+            if self.dvdorder:
+                lINDEXER_API_PARMS['dvdorder'] = True
 
             t = sickbeard.indexerApi(self.indexer).indexer(**lINDEXER_API_PARMS)
 
@@ -986,7 +988,7 @@ class TVShow(object):  # pylint: disable=too-many-instance-attributes, too-many-
 
         # clear the cache
         image_cache_dir = ek(os.path.join, sickbeard.CACHE_DIR, 'images')
-        for cache_file in ek(glob.glob, ek(os.path.join, image_cache_dir, str(self.indexerid) + '.*')):
+        for cache_file in ek(glob.glob, ek(os.path.join, glob.escape(image_cache_dir), str(self.indexerid) + '.*')):
             logger.log('Attempt to {0} cache file {1}'.format(action, cache_file))
             try:
                 if sickbeard.TRASH_REMOVE_SHOW:
@@ -1075,7 +1077,7 @@ class TVShow(object):  # pylint: disable=too-many-instance-attributes, too-many-
                         if curEp.location and curEp.status in Quality.DOWNLOADED:
 
                             if sickbeard.EP_DEFAULT_DELETED_STATUS == ARCHIVED:
-                                _, oldQuality = Quality.splitCompositeStatus(curEp.status)
+                                oldStatus_, oldQuality = Quality.splitCompositeStatus(curEp.status)
                                 new_status = Quality.compositeStatus(ARCHIVED, oldQuality)
                             else:
                                 new_status = sickbeard.EP_DEFAULT_DELETED_STATUS
@@ -1150,7 +1152,8 @@ class TVShow(object):  # pylint: disable=too-many-instance-attributes, too-many-
                         "last_update_indexer": self.last_update_indexer,
                         "rls_ignore_words": self.rls_ignore_words,
                         "rls_require_words": self.rls_require_words,
-                        "default_ep_status": self.default_ep_status}
+                        "default_ep_status": self.default_ep_status,
+                        "sub_use_sr_metadata": self.subtitles_sr_metadata}
 
         main_db_con = db.DBConnection()
         main_db_con.upsert("tv_shows", newValueDict, controlValueDict)
@@ -1224,7 +1227,7 @@ class TVShow(object):  # pylint: disable=too-many-instance-attributes, too-many-
                         quality=Quality.qualityStrings[quality]), logger.DEBUG)
             return False
 
-        _, curQuality = Quality.splitCompositeStatus(epStatus)
+        curStatus_, curQuality = Quality.splitCompositeStatus(epStatus)
 
         # if it's one of these then we want it as long as it's in our allowed initial qualities
         if epStatus in (WANTED, SKIPPED, UNKNOWN):
@@ -1389,13 +1392,12 @@ class TVEpisode(object):  # pylint: disable=too-many-instance-attributes, too-ma
 
     def refreshSubtitles(self):
         """Look for subtitles files and refresh the subtitles property"""
-        episode_info = {'show_name': self.show.name, 'location': self.location,
-                        'season': self.season, 'episode': self.episode}
-        self.subtitles, save_subtitles = subtitles.refresh_subtitles(episode_info, self.subtitles)
+        self.subtitles, save_subtitles = subtitles.refresh_subtitles(self)
         if save_subtitles:
             self.saveToDB()
 
     def download_subtitles(self, force=False):
+        force_ = force
         if not ek(os.path.isfile, self.location):
             logger.log("{id}: Episode file doesn't exist, can't download subtitles for {ep}".format
                        (id=self.show.indexerid, ep=episode_num(self.season, self.episode)),
@@ -1411,11 +1413,7 @@ class TVEpisode(object):  # pylint: disable=too-many-instance-attributes, too-ma
                    (show=self.show.name, ep=episode_num(self.season, self.episode),
                     location=os.path.basename(self.location)), logger.DEBUG)
 
-        subtitles_info = {'location': self.location, 'subtitles': self.subtitles, 'season': self.season,
-                          'episode': self.episode, 'name': self.name, 'show_name': self.show.name,
-                          'show_indexerid': self.show.indexerid, 'status': self.status}
-
-        self.subtitles, new_subtitles = subtitles.download_subtitles(subtitles_info)
+        self.subtitles, new_subtitles = subtitles.download_subtitles(self)
 
         self.subtitles_searchcount += 1 if self.subtitles_searchcount else 1
         self.subtitles_lastsearch = datetime.datetime.now().strftime(dateTimeFormat)
@@ -1501,11 +1499,10 @@ class TVEpisode(object):  # pylint: disable=too-many-instance-attributes, too-ma
             raise MultipleEpisodesInDatabaseException("Your DB has two records for the same show somehow.")
         elif not sql_results:
             logger.log("{id}: Episode {ep} not found in the database".format
-                       (id=self.show.indexerid, ep=episode_num(self.season, self.episode)),
+                       (id=self.show.indexerid, ep=episode_num(season, episode)),
                        logger.DEBUG)
             return False
         else:
-            # NAMEIT logger.log("AAAAA from" + str(self.season)+"x"+str(self.episode) + " -" + self.name + " to " + str(sql_results[0][b"name"]))
             if sql_results[0][b"name"]:
                 self.name = sql_results[0][b"name"]
 
@@ -1519,7 +1516,7 @@ class TVEpisode(object):  # pylint: disable=too-many-instance-attributes, too-ma
                 self.subtitles = sql_results[0][b"subtitles"].split(",")
             self.subtitles_searchcount = sql_results[0][b"subtitles_searchcount"]
             self.subtitles_lastsearch = sql_results[0][b"subtitles_lastsearch"]
-            self.airdate = datetime.date.fromordinal(int(sql_results[0][b"airdate"]))
+            self.airdate = datetime.date.fromordinal(long(sql_results[0][b"airdate"]))
             # logger.log("1 Status changes from " + str(self.status) + " to " + str(sql_results[0][b"status"]), logger.DEBUG)
             self.status = int(sql_results[0][b"status"] or -1)
 
@@ -1592,13 +1589,12 @@ class TVEpisode(object):  # pylint: disable=too-many-instance-attributes, too-ma
                     lINDEXER_API_PARMS = sickbeard.indexerApi(self.indexer).api_params.copy()
 
                     if not cache:
-                        lINDEXER_API_PARMS[b'cache'] = False
+                        lINDEXER_API_PARMS['cache'] = False
 
-                    if indexer_lang:
-                        lINDEXER_API_PARMS[b'language'] = indexer_lang
+                    lINDEXER_API_PARMS['language'] = indexer_lang or sickbeard.INDEXER_DEFAULT_LANGUAGE
 
-                    if self.show.dvdorder != 0:
-                        lINDEXER_API_PARMS[b'dvdorder'] = True
+                    if self.show.dvdorder:
+                        lINDEXER_API_PARMS['dvdorder'] = True
 
                     t = sickbeard.indexerApi(self.indexer).indexer(**lINDEXER_API_PARMS)
                 myEp = t[self.show.indexerid][season][episode]
@@ -2060,12 +2056,7 @@ class TVEpisode(object):  # pylint: disable=too-many-instance-attributes, too-ma
         ep_name = self._ep_name()
 
         def dot(name):
-            try:
-                assert isinstance(name, unicode), name + ' is not unicode'
-            except AssertionError as error:
-                print traceback.format_exc()
-                print error
-                os._exit(0)
+            # assert isinstance(name, unicode), name + ' is not unicode'
             return helpers.sanitizeSceneName(name)
 
         def us(name):
@@ -2092,7 +2083,7 @@ class TVEpisode(object):  # pylint: disable=too-many-instance-attributes, too-ma
                 return ''
             return parse_result.release_group.strip('.- []{}')
 
-        _, epQual = Quality.splitCompositeStatus(self.status)  # @UnusedVariable
+        epStatus_, epQual = Quality.splitCompositeStatus(self.status)  # @UnusedVariable
 
         if sickbeard.NAMING_STRIP_YEAR:
             show_name = re.sub(r"\(\d+\)$", "", self.show.name).strip()
@@ -2145,15 +2136,15 @@ class TVEpisode(object):  # pylint: disable=too-many-instance-attributes, too-ma
             '%SQ.N': dot(Quality.sceneQualityStrings[epQual] + encoder),
             '%SQ_N': us(Quality.sceneQualityStrings[epQual] + encoder),
             '%S': str(self.season),
-            '%0S': '{0:02d}'.format(self.season),
+            '%0S': '{0:02d}'.format(int(self.season)),
             '%E': str(self.episode),
-            '%0E': '{0:02d}'.format(self.episode),
+            '%0E': '{0:02d}'.format(int(self.episode)),
             '%XS': str(self.scene_season),
-            '%0XS': '{0:02d}'.format(self.scene_season),
+            '%0XS': '{0:02d}'.format(int(self.scene_season)),
             '%XE': str(self.scene_episode),
-            '%0XE': '{0:02d}'.format(self.scene_episode),
-            '%AB': '{0:03d}'.format(self.absolute_number),
-            '%XAB': '{0:03d}'.format(self.scene_absolute_number),
+            '%0XE': '{0:02d}'.format(int(self.scene_episode)),
+            '%AB': '{0:03d}'.format(int(self.absolute_number)),
+            '%XAB': '{0:03d}'.format(int(self.scene_absolute_number)),
             '%RN': release_name(self.release_name),
             '%RG': rel_grp[relgrp],
             '%CRG': rel_grp[relgrp].upper(),
@@ -2167,8 +2158,8 @@ class TVEpisode(object):  # pylint: disable=too-many-instance-attributes, too-ma
             '%CY': str(datetime.date.today().year),
             '%CM': str(datetime.date.today().month),
             '%CD': str(datetime.date.today().day),
-            '%0M': '{0:02d}'.format(self.airdate.month),
-            '%0D': '{0:02d}'.format(self.airdate.day),
+            '%0M': '{0:02d}'.format(int(self.airdate.month)),
+            '%0D': '{0:02d}'.format(int(self.airdate.day)),
             '%RT': "PROPER" if self.is_proper else "",
         }
 
@@ -2345,7 +2336,6 @@ class TVEpisode(object):  # pylint: disable=too-many-instance-attributes, too-ma
                 # fill out the template for this piece and then insert this piece into the actual pattern
                 cur_name_group_result = re.sub('(?i)(?x)' + regex_used, regex_replacement, cur_name_group)
                 # cur_name_group_result = cur_name_group.replace(ep_format, ep_string)
-                # logger.log("found "+ep_format+" as the ep pattern using "+regex_used+" and replaced it with "+regex_replacement+" to result in "+cur_name_group_result+" from "+cur_name_group, logger.DEBUG)
                 result_name = result_name.replace(cur_name_group, cur_name_group_result)
 
         result_name = self._format_string(result_name, replace_map)
@@ -2452,12 +2442,12 @@ class TVEpisode(object):  # pylint: disable=too-many-instance-attributes, too-ma
             return
 
         related_files = postProcessor.PostProcessor(self.location).list_associated_files(
-            self.location, base_name_only=True, subfolders=True)
+            self.location, subfolders=True)
 
         # This is wrong. Cause of pp not moving subs.
         if self.show.subtitles and sickbeard.SUBTITLES_DIR != '':
-            related_subs = postProcessor.PostProcessor(self.location).list_associated_files(sickbeard.SUBTITLES_DIR,
-                                                                                            subtitles_only=True, subfolders=True)
+            related_subs = postProcessor.PostProcessor(self.location).list_associated_files(
+                sickbeard.SUBTITLES_DIR, subtitles_only=True, subfolders=True)
             absolute_proper_subs_path = ek(os.path.join, sickbeard.SUBTITLES_DIR, self.formatted_filename())
 
         logger.log("Files associated to " + self.location + ": " + str(related_files), logger.DEBUG)

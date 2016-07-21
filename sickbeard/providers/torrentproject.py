@@ -59,7 +59,8 @@ class TorrentProjectProvider(TorrentProvider):  # pylint: disable=too-many-insta
         search_params = {
             'out': 'json',
             'filter': 2101,
-            'num': 150
+            'showmagnets': 'on',
+            'num': 50
         }
 
         for mode in search_strings:  # Mode = RSS, Season, Episode
@@ -101,29 +102,10 @@ class TorrentProjectProvider(TorrentProvider):  # pylint: disable=too-many-insta
 
                     t_hash = torrents[i]["torrent_hash"]
                     torrent_size = torrents[i]["torrent_size"]
+                    if not all([t_hash, torrent_size]):
+                        continue
+                    download_url = torrents[i]["magnet"] + self._custom_trackers
                     size = convert_size(torrent_size) or -1
-
-                    try:
-                        assert seeders < 10
-                        assert mode != 'RSS'
-                        logger.log(u"Torrent has less than 10 seeds getting dyn trackers: " + title, logger.DEBUG)
-
-                        if self.custom_url:
-                            if not validators.url(self.custom_url):
-                                logger.log("Invalid custom url set, please check your settings", logger.WARNING)
-                                return results
-                            trackers_url = self.custom_url
-                        else:
-                            trackers_url = self.url
-
-                        trackers_url = urljoin(trackers_url, t_hash)
-                        trackers_url = urljoin(trackers_url, "/trackers_json")
-                        jdata = self.get_url(trackers_url, returns='json')
-
-                        assert jdata != "maintenance"
-                        download_url = "magnet:?xt=urn:btih:" + t_hash + "&dn=" + title + "".join(["&tr=" + s for s in jdata])
-                    except (Exception, AssertionError):
-                        download_url = "magnet:?xt=urn:btih:" + t_hash + "&dn=" + title + self._custom_trackers
 
                     if not all([title, download_url]):
                         continue

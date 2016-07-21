@@ -49,7 +49,7 @@ class SpeedCDProvider(TorrentProvider):  # pylint: disable=too-many-instance-att
         # URLs
         self.url = 'https://speed.cd'
         self.urls = {
-            'login': urljoin(self.url, 'take.login.php'),
+            'login': urljoin(self.url, 'takeElogin.php'),
             'search': urljoin(self.url, 'browse.php'),
         }
 
@@ -130,7 +130,8 @@ class SpeedCDProvider(TorrentProvider):  # pylint: disable=too-many-instance-att
                     continue
 
                 with BS4Parser(data, 'html5lib') as html:
-                    torrent_table = html.find('div', class_='boxContent').find('table')
+                    torrent_table = html.find('div', class_='boxContent')
+                    torrent_table = torrent_table.find('table') if torrent_table else []
                     torrent_rows = torrent_table('tr') if torrent_table else []
 
                     # Continue only if at least one Release is found
@@ -163,7 +164,7 @@ class SpeedCDProvider(TorrentProvider):  # pylint: disable=too-many-instance-att
                             torrent_size = torrent_size[:-2] + ' ' + torrent_size[-2:]
                             size = convert_size(torrent_size, units=units) or -1
 
-                            item = {'title': title, 'link': download_url, 'size': size, 'seeders': seeders, 'leechers': leechers, 'hash': None}
+                            item = {'title': title, 'link': download_url, 'size': size, 'seeders': seeders, 'leechers': leechers, 'hash': ''}
                             if mode != 'RSS':
                                 logger.log(u"Found result: {0} with {1} seeders and {2} leechers".format(title, seeders, leechers), logger.DEBUG)
 

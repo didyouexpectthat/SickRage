@@ -107,8 +107,8 @@ def snatchEpisode(result, endStatus=SNATCHED):  # pylint: disable=too-many-branc
         for curEp in result.episodes:
             if datetime.date.today() - curEp.airdate <= datetime.timedelta(days=7):
                 result.priority = 1
-    if re.search(r'(^|[\. _-])(proper|repack)([\. _-]|$)', result.name, re.I) is not None:
-        endStatus = SNATCHED_PROPER
+
+    endStatus = SNATCHED_PROPER if re.search(r'\b(proper|repack|real)\b', result.name, re.I) else endStatus
 
     if result.url.startswith('magnet') or result.url.endswith('torrent'):
         result.resultType = 'torrent'
@@ -122,6 +122,10 @@ def snatchEpisode(result, endStatus=SNATCHED):  # pylint: disable=too-many-branc
         elif sickbeard.NZB_METHOD == "nzbget":
             is_proper = True if endStatus == SNATCHED_PROPER else False
             dlResult = nzbget.sendNZB(result, is_proper)
+        elif sickbeard.NZB_METHOD == "download_station":
+            client = clients.getClientIstance(sickbeard.NZB_METHOD)(
+                sickbeard.SYNOLOGY_DSM_HOST, sickbeard.SYNOLOGY_DSM_USERNAME, sickbeard.SYNOLOGY_DSM_PASSWORD)
+            dlResult = client.sendNZB(result)
         else:
             logger.log(u"Unknown NZB action specified in config: " + sickbeard.NZB_METHOD, logger.ERROR)
             dlResult = False
@@ -224,19 +228,7 @@ def pickBestResult(results, show):  # pylint: disable=too-many-branches
             logger.log(cur_result.name + " is a quality we know we don't want, rejecting it", logger.DEBUG)
             continue
 
-        if show.rls_ignore_words and show_name_helpers.containsAtLeastOneWord(cur_result.name, cur_result.show.rls_ignore_words):
-            logger.log(u"Ignoring " + cur_result.name + " based on ignored words filter: " + show.rls_ignore_words,
-                       logger.INFO)
-            continue
-
-        if show.rls_require_words and not show_name_helpers.containsAtLeastOneWord(cur_result.name, cur_result.show.rls_require_words):
-            logger.log(u"Ignoring " + cur_result.name + " based on required words filter: " + show.rls_require_words,
-                       logger.INFO)
-            continue
-
-        if not show_name_helpers.filterBadReleases(cur_result.name, parse=False):
-            logger.log(u"Ignoring " + cur_result.name + " because its not a valid scene release that we want, ignoring it",
-                       logger.INFO)
+        if not show_name_helpers.filter_bad_releases(cur_result.name, parse=False, show=show):
             continue
 
         if hasattr(cur_result, 'size'):
@@ -317,7 +309,7 @@ def isFirstBestMatch(result):
 
     show_obj = result.episodes[0].show
 
-    _, best_qualities = Quality.splitQuality(show_obj.quality)
+    any_qualities_, best_qualities = Quality.splitQuality(show_obj.quality)
 
     return result.quality in best_qualities if best_qualities else False
 
@@ -508,7 +500,7 @@ def searchProviders(show, episodes, manualSearch=False, downCurQuality=False):  
             if len(searchResults):
                 # make a list of all the results for this provider
                 for curEp in searchResults:
-                    if curEp in foundResults:
+                    if curEp in foundResults[curProvider.name]:
                         foundResults[curProvider.name][curEp] += searchResults[curEp]
                     else:
                         foundResults[curProvider.name][curEp] = searchResults[curEp]
@@ -543,7 +535,7 @@ def searchProviders(show, episodes, manualSearch=False, downCurQuality=False):  
 
         # see if every episode is wanted
         if bestSeasonResult:
-            searchedSeasons = [str(x.season) for x in episodes]
+            searchedSeasons = {str(x.season) for x in episodes}
 
             # get the quality of the season nzb
             seasonQual = bestSeasonResult.quality

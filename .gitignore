@@ -75,3 +75,10 @@ htmlcov
 # nzbToMedia #
 ######################
 contrib/nzbToMedia
+
+# setup.py #
+######################
+/*.egg-info
+
+# virtualenv #
+venv

@@ -153,8 +153,8 @@ class HoundDawgsProvider(TorrentProvider):  # pylint: disable=too-many-instance-
                                 torrent_size = result.find("td", class_="nobr").find_next_sibling("td").string
                                 if torrent_size:
                                     size = convert_size(torrent_size) or -1
-                                seeders = try_int((result('td')[6]).text)
-                                leechers = try_int((result('td')[7]).text)
+                                seeders = try_int((result('td')[6]).text.replace(',', ''))
+                                leechers = try_int((result('td')[7]).text.replace(',', ''))
 
                             except (AttributeError, TypeError):
                                 continue
@@ -169,7 +169,7 @@ class HoundDawgsProvider(TorrentProvider):  # pylint: disable=too-many-instance-
                                                (title, seeders, leechers), logger.DEBUG)
                                 continue
 
-                            item = {'title': title, 'link': download_url, 'size': size, 'seeders': seeders, 'leechers': leechers, 'hash': None}
+                            item = {'title': title, 'link': download_url, 'size': size, 'seeders': seeders, 'leechers': leechers, 'hash': ''}
                             if mode != 'RSS':
                                 logger.log(u"Found result: {0} with {1} seeders and {2} leechers".format(title, seeders, leechers), logger.DEBUG)
 

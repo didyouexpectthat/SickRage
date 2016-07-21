@@ -165,6 +165,7 @@ class SickRage(object):
         sickbeard.MY_FULLNAME = ek(os.path.normpath, ek(os.path.abspath, __file__))
         sickbeard.MY_NAME = ek(os.path.basename, sickbeard.MY_FULLNAME)
         sickbeard.PROG_DIR = ek(os.path.dirname, sickbeard.MY_FULLNAME)
+        sickbeard.LOCALE_DIR = ek(os.path.join, sickbeard.PROG_DIR, 'locale')
         sickbeard.DATA_DIR = sickbeard.PROG_DIR
         sickbeard.MY_ARGS = sys.argv[1:]
 
@@ -197,7 +198,7 @@ class SickRage(object):
         threading.currentThread().name = 'MAIN'
 
         try:
-            opts, _ = getopt.getopt(
+            opts, args_ = getopt.getopt(
                 sys.argv[1:], 'hqdp::',
                 ['help', 'quiet', 'nolaunch', 'daemon', 'pidfile=', 'port=', 'datadir=', 'config=', 'noresize']
             )
@@ -307,7 +308,7 @@ class SickRage(object):
         if self.console_logging and not ek(os.path.isfile, sickbeard.CONFIG_FILE):
             sys.stdout.write('Unable to find {0}, all settings will be default!\n'.format(sickbeard.CONFIG_FILE))
 
-        sickbeard.CFG = ConfigObj(sickbeard.CONFIG_FILE)
+        sickbeard.CFG = ConfigObj(sickbeard.CONFIG_FILE, encoding='UTF-8')
 
         # Initialize the config and our threads
         sickbeard.initialize(consoleLogging=self.console_logging)

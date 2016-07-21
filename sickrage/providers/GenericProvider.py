@@ -18,14 +18,14 @@
 # along with SickRage. If not, see <http://www.gnu.org/licenses/>.
 
 import re
-import sickbeard
+from datetime import datetime
 
 from base64 import b16encode, b32decode
-from datetime import datetime
 from itertools import chain
 from os.path import join
 from random import shuffle
 
+import sickbeard
 from sickbeard import logger
 from sickbeard.classes import Proper, SearchResult
 from sickbeard.common import MULTI_EP_RESULT, Quality, SEASON_RESULT, UA_POOL
@@ -36,7 +36,7 @@ from sickbeard.show_name_helpers import allPossibleShowNames
 from sickbeard.tvcache import TVCache
 from sickrage.helper.common import replace_extension, sanitize_filename
 from sickrage.helper.encoding import ek
-from sickrage.helper.exceptions import ex
+from requests.utils import add_dict_to_cookiejar
 
 
 class GenericProvider(object):  # pylint: disable=too-many-instance-attributes
@@ -70,6 +70,11 @@ class GenericProvider(object):  # pylint: disable=too-many-instance-attributes
         self.supports_backlog = True
         self.url = ''
         self.urls = {}
+
+        # Use and configure the attribute enable_cookies to show or hide the cookies input field per provider
+        self.enable_cookies = False
+        self.cookies = ''
+        self.rss_cookies = ''
 
         shuffle(self.bt_cache_urls)
 
@@ -162,7 +167,7 @@ class GenericProvider(object):  # pylint: disable=too-many-instance-attributes
                         items[quality] = []
                     items[quality].append(item)
 
-            items_list = list(chain(*[v for (_, v) in sorted(items.iteritems(), reverse=True)]))
+            items_list = list(chain(*[v for (k_, v) in sorted(items.iteritems(), reverse=True)]))
             items_list += unknown_items
 
         cl = []
@@ -307,8 +312,8 @@ class GenericProvider(object):  # pylint: disable=too-many-instance-attributes
         if cl:
             # pylint: disable=protected-access
             # Access to a protected member of a client class
-            db = self.cache._getDB()
-            db.mass_action(cl)
+            cache_db = self.cache._getDB()
+            cache_db.mass_action(cl)
 
         return results
 
@@ -316,7 +321,7 @@ class GenericProvider(object):  # pylint: disable=too-many-instance-attributes
         return GenericProvider.make_id(self.name)
 
     def get_quality(self, item, anime=False):
-        (title, _) = self._get_title_and_url(item)
+        (title, url_) = self._get_title_and_url(item)
         quality = Quality.scene_quality(title, anime)
 
         return quality
@@ -328,8 +333,7 @@ class GenericProvider(object):  # pylint: disable=too-many-instance-attributes
         return result
 
     @staticmethod
-    def get_url_hook(response, **kwargs):
-        _ = kwargs
+    def get_url_hook(response, **kwargs_):
         logger.log(u'{0} URL: {1} [Status: {2}]'.format
                    (response.request.method, response.request.url, response.status_code), logger.DEBUG)
 
@@ -427,8 +431,8 @@ class GenericProvider(object):  # pylint: disable=too-many-instance-attributes
 
     def _get_size(self, item):  # pylint: disable=unused-argument,no-self-use
         try:
-            return item.get('size')
-        except:
+            return item.get('size', -1)
+        except AttributeError:
             return -1
 
     def _get_storage_dir(self):  # pylint: disable=no-self-use
@@ -453,35 +457,34 @@ class GenericProvider(object):  # pylint: disable=too-many-instance-attributes
 
         return title, url
 
+    @staticmethod
+    def hash_from_magnet(magnet):
+        try:
+            torrent_hash = re.findall(r'urn:btih:([\w]{32,40})', magnet)[0].upper()
+            if len(torrent_hash) == 32:
+                torrent_hash = b16encode(b32decode(torrent_hash)).upper()
+            return torrent_hash
+        except Exception:
+            logger.log(u'Unable to extract torrent hash or name from magnet: {0}'.format(magnet), logger.ERROR)
+            return ''
+
     def _make_url(self, result):
         if not result:
             return '', ''
 
-        urls = []
         filename = u''
-
+        urls = [result.url]
         if result.url.startswith('magnet'):
-            try:
-                torrent_hash = re.findall(r'urn:btih:([\w]{32,40})', result.url)[0].upper()
-
-                try:
-                    torrent_name = re.findall('dn=([^&]+)', result.url)[0]
-                except Exception:
-                    torrent_name = 'NO_DOWNLOAD_NAME'
-
-                if len(torrent_hash) == 32:
-                    torrent_hash = b16encode(b32decode(torrent_hash)).upper()
-
-                if not torrent_hash:
-                    logger.log(u'Unable to extract torrent hash from magnet: {0}'.format(ex(result.url)), logger.ERROR)
-                    return urls, filename
-
-                urls = [x.format(torrent_hash=torrent_hash, torrent_name=torrent_name) for x in self.bt_cache_urls]
-            except Exception:
-                logger.log(u'Unable to extract torrent hash or name from magnet: {0}'.format(ex(result.url)), logger.ERROR)
+            torrent_hash = self.hash_from_magnet(result.url)
+            if not torrent_hash:
                 return urls, filename
-        else:
-            urls = [result.url]
+
+            try:
+                torrent_name = re.findall('dn=([^&]+)', result.url)[0]
+            except Exception:
+                torrent_name = 'NO_DOWNLOAD_NAME'
+
+            urls = [x.format(torrent_hash=torrent_hash, torrent_name=torrent_name) for x in self.bt_cache_urls]
 
         filename = ek(join, self._get_storage_dir(), sanitize_filename(result.name) + '.' + self.provider_type)
 
@@ -489,3 +492,19 @@ class GenericProvider(object):  # pylint: disable=too-many-instance-attributes
 
     def _verify_download(self, file_name=None):  # pylint: disable=unused-argument,no-self-use
         return True
+
+    def add_cookies_from_ui(self):
+        """
+        Adds the cookies configured from UI to the providers requests session
+        :return: A tuple with the the (success result, and a descriptive message in str)
+        """
+
+        # This is the generic attribute used to manually add cookies for provider authentication
+        if self.enable_cookies and self.cookies:
+            cookie_validator = re.compile(r'^(\w+=\w+)(;\w+=\w+)*$')
+            if not cookie_validator.match(self.cookies):
+                return False, 'Cookie is not correctly formatted: {0}'.format(self.cookies)
+            add_dict_to_cookiejar(self.session.cookies, dict(x.rsplit('=', 1) for x in self.cookies.split(';')))
+            return True, 'torrent cookie'
+
+        return False, 'No Cookies added from ui for provider: {0}'.format(self.name)

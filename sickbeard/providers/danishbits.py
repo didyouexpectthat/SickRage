@@ -159,10 +159,10 @@ class DanishbitsProvider(TorrentProvider):  # pylint: disable=too-many-instance-
                             if self.freeleech and not freeleech:
                                 continue
 
-                            torrent_size = cells[labels.index('Størrelse')].contents[0]
+                            torrent_size = cells[2].contents[0]
                             size = convert_size(torrent_size, units=units) or -1
 
-                            item = {'title': title, 'link': download_url, 'size': size, 'seeders': seeders, 'leechers': leechers, 'hash': None}
+                            item = {'title': title, 'link': download_url, 'size': size, 'seeders': seeders, 'leechers': leechers, 'hash': ''}
                             if mode != 'RSS':
                                 logger.log(u"Found result: {0} with {1} seeders and {2} leechers".format
                                            (title, seeders, leechers), logger.DEBUG)

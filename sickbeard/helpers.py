@@ -21,59 +21,53 @@
 
 from __future__ import unicode_literals
 
-import os
 import io
-import ctypes
+import os
 import re
-import socket
+import ast
+import ssl
 import stat
-import tempfile
 import time
+import ctypes
+import shutil
+import socket
 import traceback
 import urllib
-from requests.utils import urlparse
 import uuid
 import base64
 import zipfile
 import datetime
-import ast
 import operator
 import platform
-import sickbeard
-import adba
-import requests
-import certifi
 import hashlib
 import random
 from contextlib import closing
-import ssl
+from itertools import izip, cycle
+import xml.etree.ElementTree as ET
 
-from sickbeard import logger, classes
-from sickbeard.common import USER_AGENT
-from sickbeard import db
-from sickrage.helper.common import media_extensions, pretty_file_size, subtitle_extensions, episode_num
-from sickrage.helper.encoding import ek
-from sickrage.show.Show import Show
+import adba
+import certifi
+import requests
+from requests.utils import urlparse
 from cachecontrol import CacheControl
 # from httpcache import CachingHTTPAdapter
 
-from itertools import izip, cycle
+import sickbeard
+from sickbeard import logger, classes, db
+from sickbeard.common import USER_AGENT
+from sickrage.helper import MEDIA_EXTENSIONS, SUBTITLE_EXTENSIONS, pretty_file_size, episode_num
+from sickrage.helper.encoding import ek
+from sickrage.show.Show import Show
 
-import shutil
+
 import shutil_custom
 
-import xml.etree.ElementTree as ET
 
 shutil.copyfile = shutil_custom.copyfile_custom
 
 # pylint: disable=protected-access
 # Access to a protected member of a client class
 urllib._urlopener = classes.SickBeardURLopener()
-
-
-def fixGlob(path):
-    path = re.sub(r'\[b', '[[]', path)
-    return re.sub(r'(?<!\[)\]', '[]]', path)
 
 
 def indentXML(elem, level=0):
@@ -203,7 +197,7 @@ def isMediaFile(filename):
         if re.search('extras?$', filname_parts[0], re.I):
             return False
 
-        return filname_parts[-1].lower() in media_extensions
+        return filname_parts[-1].lower() in MEDIA_EXTENSIONS
     except TypeError as error:  # Not a string
         logger.log('Invalid filename. Filename must be a string. {0}'.format(error), logger.DEBUG)  # pylint: disable=no-member
         return False
@@ -290,7 +284,7 @@ def searchIndexerForShowID(regShowName, indexer=None, indexer_id=None, ui=None):
         # Query Indexers for each search term and build the list of results
         lINDEXER_API_PARMS = sickbeard.indexerApi(i).api_params.copy()
         if ui is not None:
-            lINDEXER_API_PARMS[b'custom_ui'] = ui
+            lINDEXER_API_PARMS['custom_ui'] = ui
         t = sickbeard.indexerApi(i).indexer(**lINDEXER_API_PARMS)
 
         for name in showNames:
@@ -403,14 +397,8 @@ def link(src, dst):
     :param dst: Destination file
     """
 
-    if os.name == 'nt':
-        if isinstance(src, bytes):
-            src = src.decode(sickbeard.SYS_ENCODING)
-
-        if isinstance(dst, bytes):
-            dst = dst.decode(sickbeard.SYS_ENCODING)
-
-        if not ctypes.windll.kernel32.CreateHardLinkW(dst, src, 0) == 0:
+    if platform.system() == 'Windows':
+        if ctypes.windll.kernel32.CreateHardLinkW(ctypes.c_wchar_p(unicode(dst)), ctypes.c_wchar_p(unicode(src)), None) == 0:
             raise ctypes.WinError()
     else:
         ek(os.link, src, dst)
@@ -441,8 +429,8 @@ def symlink(src, dst):
     :param dst: Destination file
     """
 
-    if os.name == 'nt':
-        if ctypes.windll.kernel32.CreateSymbolicLinkW(unicode(dst), unicode(src), 1 if ek(os.path.isdir, src) else 0) in [0, 1280]:
+    if platform.system() == 'Windows':
+        if ctypes.windll.kernel32.CreateSymbolicLinkW(ctypes.c_wchar_p(unicode(dst)), ctypes.c_wchar_p(unicode(src)), 1 if ek(os.path.isdir, src) else 0) in [0, 1280]:
             raise ctypes.WinError()
     else:
         ek(os.symlink, src, dst)
@@ -477,7 +465,7 @@ def make_dirs(path):
 
     if not ek(os.path.isdir, path):
         # Windows, create all missing folders
-        if os.name == 'nt' or os.name == 'ce':
+        if platform.system() == 'Windows':
             try:
                 logger.log("Folder {0} didn't exist, creating it".format(path), logger.DEBUG)
                 ek(os.makedirs, path)
@@ -532,7 +520,7 @@ def rename_ep_file(cur_path, new_path, old_path_length=0):
         cur_file_ext = cur_path[old_path_length:]
         cur_file_name = cur_path[:old_path_length]
 
-    if cur_file_ext[1:] in subtitle_extensions:
+    if cur_file_ext[1:] in SUBTITLE_EXTENSIONS:
         # Extract subtitle language from filename
         sublang = ek(os.path.splitext, cur_file_name)[1][1:]
 
@@ -616,7 +604,7 @@ def chmodAsParent(childPath):
     :param childPath: Child Path to change permissions to sync from parent
     """
 
-    if os.name == 'nt' or os.name == 'ce':
+    if platform.system() == 'Windows':
         return
 
     parentPath = ek(os.path.dirname, childPath)
@@ -662,7 +650,7 @@ def fixSetGroupID(childPath):
     :param childPath: Path to inherit SGID permissions from parent
     """
 
-    if os.name == 'nt' or os.name == 'ce':
+    if platform.system() == 'Windows':
         return
 
     parentPath = ek(os.path.dirname, childPath)
@@ -769,7 +757,7 @@ def sanitizeSceneName(name, anime=False):
     :return: A string containing the scene version of the show name given.
     """
 
-    assert isinstance(name, unicode), name + ' is not unicode'
+    # assert isinstance(name, unicode), name + ' is not unicode'
 
     if not name:
         return ''
@@ -916,7 +904,7 @@ def restoreVersionedFile(backup_file, version):
 
     numTries = 0
 
-    new_file, _ = ek(os.path.splitext, backup_file)
+    new_file, ext_ = ek(os.path.splitext, backup_file)
     restore_file = new_file + '.' + 'v' + str(version)
 
     if not ek(os.path.isfile, new_file):
@@ -1096,7 +1084,7 @@ def is_hidden_folder(folder):
 
     def has_hidden_attribute(filepath):
         try:
-            attrs = ctypes.windll.kernel32.GetFileAttributesW(unicode(filepath))
+            attrs = ctypes.windll.kernel32.GetFileAttributesW(ctypes.c_wchar_p(unicode(filepath)))
             assert attrs != -1
             result = bool(attrs & 2)
         except (AttributeError, AssertionError):
@@ -1123,11 +1111,10 @@ def validateShow(show, season=None, episode=None):
     try:
         lINDEXER_API_PARMS = sickbeard.indexerApi(show.indexer).api_params.copy()
 
-        if indexer_lang and not indexer_lang == sickbeard.INDEXER_DEFAULT_LANGUAGE:
-            lINDEXER_API_PARMS[b'language'] = indexer_lang
+        lINDEXER_API_PARMS['language'] = indexer_lang or sickbeard.INDEXER_DEFAULT_LANGUAGE
 
-        if show.dvdorder != 0:
-            lINDEXER_API_PARMS[b'dvdorder'] = True
+        if show.dvdorder:
+            lINDEXER_API_PARMS['dvdorder'] = True
 
         t = sickbeard.indexerApi(show.indexer).indexer(**lINDEXER_API_PARMS)
         if season is None and episode is None:
@@ -1301,7 +1288,7 @@ def mapIndexersToShow(showObj):
                 continue
 
             lINDEXER_API_PARMS = sickbeard.indexerApi(indexer).api_params.copy()
-            lINDEXER_API_PARMS[b'custom_ui'] = classes.ShowListUI
+            lINDEXER_API_PARMS['custom_ui'] = classes.ShowListUI
             t = sickbeard.indexerApi(indexer).indexer(**lINDEXER_API_PARMS)
 
             try:
@@ -1344,26 +1331,6 @@ def touchFile(fname, atime=None):
         return True
 
     return False
-
-
-def _getTempDir():
-    """
-    Returns the [system temp dir]/tvdb_api-u501 (or
-    tvdb_api-myuser)
-    """
-
-    import getpass
-
-    if hasattr(os, 'getuid'):
-        uid = "u{0}".format(os.getuid())
-    else:
-        # For Windows
-        try:
-            uid = getpass.getuser()
-        except ImportError:
-            return ek(os.path.join, tempfile.gettempdir(), "sickrage")
-
-    return ek(os.path.join, tempfile.gettempdir(), "sickrage-{0}".format(uid))
 
 
 def make_session():
@@ -1428,7 +1395,7 @@ def getURL(url, post_data=None, params=None, headers=None,  # pylint:disable=too
     try:
         return resp if response_type == 'response' or response_type is None else resp.json() if response_type == 'json' else getattr(resp, response_type, resp)
     except ValueError:
-        logger.log('Requested a json response but response was not json, check the url: {1}'.format(url), logger.DEBUG)
+        logger.log('Requested a json response but response was not json, check the url: {0}'.format(url), logger.DEBUG)
         return None
 
 
@@ -1483,7 +1450,11 @@ def handle_requests_exception(requests_exception):  # pylint: disable=too-many-b
         logger.log(traceback.format_exc(), logger.DEBUG)
 
     except requests.exceptions.HTTPError as error:
-        logger.log(default.format(error))
+        if error.response.status_code == 404 and \
+            error.response.headers.get('X-Content-Type-Options') == 'nosniff':
+            pass
+        else:
+            logger.log(default.format(error))
     except requests.exceptions.TooManyRedirects as error:
         logger.log(default.format(error))
     except requests.exceptions.ConnectTimeout as error:
@@ -1509,8 +1480,6 @@ def handle_requests_exception(requests_exception):  # pylint: disable=too-many-b
         logger.log(default.format(error))
     except requests.exceptions.StreamConsumedError as error:
         logger.log(default.format(error))
-    except requests.exceptions.StreamConsumedError as error:
-        logger.log(default.format(error))
     except requests.exceptions.URLRequired as error:
         logger.log(default.format(error))
     except Exception as error:
@@ -1530,7 +1499,7 @@ def get_size(start_path='.'):
         return -1
 
     total_size = 0
-    for dirpath, _, filenames in ek(os.walk, start_path):
+    for dirpath, dirnames_, filenames in ek(os.walk, start_path):
         for f in filenames:
             fp = ek(os.path.join, dirpath, f)
             try:
@@ -1563,28 +1532,29 @@ def generateCookieSecret():
 
 def disk_usage(path):
     if platform.system() == 'Windows':
-        import sys
-        _, total, free = ctypes.c_ulonglong(), ctypes.c_ulonglong(), ctypes.c_ulonglong()
-        if sys.version_info >= (3,) or isinstance(path, unicode):
-            method = ctypes.windll.kernel32.GetDiskFreeSpaceExW
-        else:
-            method = ctypes.windll.kernel32.GetDiskFreeSpaceExA
-        ret = method(path, ctypes.byref(_), ctypes.byref(total), ctypes.byref(free))
-        if ret == 0:
-            logger.log("Unable to determine free space, something went wrong", logger.WARNING)
+        free = ctypes.c_ulonglong(0)
+        if ctypes.windll.kernel32.GetDiskFreeSpaceExW(ctypes.c_wchar_p(unicode(path)), None, None, ctypes.pointer(free)) == 0:
             raise ctypes.WinError()
         return free.value
 
     elif hasattr(os, 'statvfs'):  # POSIX
-        import subprocess
-        call = subprocess.Popen(["df", path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        output = call.communicate()[0]
-        return output.split("\n")[1].split()[3]
+        if platform.system() == 'Darwin':
+            try:
+                import subprocess
+                call = subprocess.Popen(["df", "-k", path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                output = call.communicate()[0]
+                return int(output.split("\n")[1].split()[3]) * 1024
+            except Exception:
+                pass
+
+        st = ek(os.statvfs, path)
+        return st.f_bavail * st.f_frsize  # pylint: disable=no-member
+
     else:
         raise Exception("Unable to determine free space on your OS")
 
 
-def verify_freespace(src, dest, oldfile=None):
+def verify_freespace(src, dest, oldfile=None, method="copy"):
     """
     Checks if the target system has enough free space to copy or move a file.
 
@@ -1595,7 +1565,7 @@ def verify_freespace(src, dest, oldfile=None):
     """
 
     if not isinstance(oldfile, list):
-        oldfile = [oldfile]
+        oldfile = [oldfile] if oldfile else []
 
     logger.log("Trying to determine free space on destination drive", logger.DEBUG)
 
@@ -1603,10 +1573,22 @@ def verify_freespace(src, dest, oldfile=None):
         logger.log("A path to a file is required for the source. {0} is not a file.".format(src), logger.WARNING)
         return True
 
+    # shortcut: if we are moving the file and the destination == src dir,
+    # then by definition there is enough space
+    if method == "move" and ek(os.stat, src).st_dev == ek(os.stat, dest if ek(os.path.exists, dest) else ek(os.path.dirname, dest)).st_dev:  # pylint: disable=no-member
+        logger.log("Process method is 'move' and src and destination are on the same device, skipping free space check", logger.INFO)
+        return True
+
     try:
-        diskfree = disk_usage(dest)
-    except Exception:
+        diskfree = disk_usage(dest if ek(os.path.exists, dest) else ek(os.path.dirname, dest))
+    except Exception as error:
         logger.log("Unable to determine free space, so I will assume there is enough.", logger.WARNING)
+        logger.log("Error: {error}".format(error=error), logger.DEBUG)
+        logger.log(traceback.format_exc(), logger.DEBUG)
+        return True
+
+    # Lets also do this for symlink and hardlink
+    if method.endswith('link') and diskfree > 1024**2:
         return True
 
     neededspace = ek(os.path.getsize, src)
@@ -1632,8 +1614,10 @@ def getDiskSpaceUsage(diskPath=None):
     if diskPath and ek(os.path.exists, diskPath):
         try:
             free = disk_usage(diskPath)
-        except Exception:
+        except Exception as error:
             logger.log("Unable to determine free space", logger.WARNING)
+            logger.log("Error: {error}".format(error=error), logger.DEBUG)
+            logger.log(traceback.format_exc(), logger.DEBUG)
         else:
             return pretty_file_size(free)
 
@@ -1743,8 +1727,7 @@ def getTVDBFromID(indexer_id, indexer):  # pylint:disable=too-many-return-statem
 
 def get_showname_from_indexer(indexer, indexer_id, lang='en'):
     lINDEXER_API_PARMS = sickbeard.indexerApi(indexer).api_params.copy()
-    if lang:
-        lINDEXER_API_PARMS[b'language'] = lang
+    lINDEXER_API_PARMS['language'] = lang or sickbeard.INDEXER_DEFAULT_LANGUAGE
 
     logger.log('{0}: {1!r}'.format(sickbeard.indexerApi(indexer).name, lINDEXER_API_PARMS))
 
